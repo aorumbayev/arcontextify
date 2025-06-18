@@ -1,6 +1,6 @@
 [project]
 name = "arcontextify"
-version = "0.0.1"
+version = "0.0.3"
 description = "Convert ARC-56 smart contract specifications to MCP servers"
 readme = "README.md"
 authors = [{ name = "Al O", email = "altynbek.orumbayev@makerx.com.au" }]

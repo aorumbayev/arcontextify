@@ -1,10 +1,12 @@
 <div align="center">
-<a href="https://ibb.co/Q3xMZjN2"><img src="https://i.ibb.co/nNKjT8cH/logo.png" alt="logo" border="0" width="60%"></a>
+<a href="https://ibb.co/39mShM2H"><img src="https://i.ibb.co/VcYMBQR8/Qm-Zqt55w-HXr-Zzh-Bih-SVz-XDvwp9rguv-LAv-Fh-Um1q-JR6-GYe-Q.png" alt="Qm-Zqt55w-HXr-Zzh-Bih-SVz-XDvwp9rguv-LAv-Fh-Um1q-JR6-GYe-Q" border="0" width="60%"></a>
 </div>
 
 ---
 
 Convert ARC-56 smart contracts to MCP servers for AI agent integration.
+
+> Disclaimer: this is an experimental proof of concept tool. It is not intended for production use and may contain bugs or incomplete features.
 
 ## Features
 
@@ -18,9 +20,9 @@ Convert ARC-56 smart contracts to MCP servers for AI agent integration.
 ## Installation
 
 ```bash
-git clone <repo-url>
-cd arcontextify
-uv sync
+pipx install arcontextify 
+# or
+uv tool install arcontextify
 ```
 
 ## Usage
