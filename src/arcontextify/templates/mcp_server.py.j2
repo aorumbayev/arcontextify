@@ -1,0 +1,502 @@
+"""Generated MCP Server for {{ contract.name }}."""
+
+import json
+import os
+from typing import Any
+from mcp.server.fastmcp import FastMCP
+from algokit_utils import (
+    AlgorandClient,
+    SigningAccount,
+    AlgoClientNetworkConfig
+)
+from algokit_utils.transactions import AppCallMethodCallParams
+from algosdk.abi import Contract, Method
+from algosdk.account import address_from_private_key
+from algosdk.mnemonic import to_private_key
+import logging
+import re
+
+# MCP Server for {{ contract.name }}
+{% if contract.description %}# {{ contract.description }}{% endif %}
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+mcp = FastMCP("{{ contract.name }}")
+
+# Global state - initialized from environment variables
+_algorand_client: AlgorandClient | None = None
+_account: SigningAccount | None = None
+_contract_id: int | None = None
+_abi_contract: Contract | None = None
+_initialized: bool = False
+_call_types: str = "{{ call_types }}"
+
+# Environment variable keys
+ENV_ALGOD_TOKEN = "ALGORAND_ALGOD_TOKEN"
+ENV_ALGOD_SERVER = "ALGORAND_ALGOD_SERVER"
+ENV_ALGOD_PORT = "ALGORAND_ALGOD_PORT"
+ENV_DELEGATED_KEY = "ALGORAND_DELEGATED_PRIVATE_KEY"
+ENV_APP_ID = "ALGORAND_APP_ID"
+
+
+def _validate_address(address: str) -> bool:
+    """Validate Algorand address format."""
+    if not address or len(address) != 58:
+        return False
+    # Basic regex for Algorand address (base32 encoded)
+    return bool(re.match(r'^[A-Z2-7]{58}$', address))
+
+
+def _validate_private_key(private_key: str) -> bool:
+    """Validate private key format."""
+    try:
+        # Check if it's a mnemonic (25 words) or private key
+        if len(private_key.split()) == 25:
+            # Validate mnemonic
+            to_private_key(private_key)
+        else:
+            # Validate private key by trying to get address
+            address_from_private_key(private_key)
+        return True
+    except Exception:
+        return False
+
+
+def _init_from_environment() -> None:
+    """Initialize connection from environment variables."""
+    global _algorand_client, _account, _contract_id, _abi_contract, _initialized
+    
+    if _initialized:
+        return
+        
+    # Get environment variables
+    algod_token = os.getenv(ENV_ALGOD_TOKEN)
+    algod_server = os.getenv(ENV_ALGOD_SERVER)
+    delegated_key = os.getenv(ENV_DELEGATED_KEY)
+    algod_port = os.getenv(ENV_ALGOD_PORT, "443")  # Default to 443 if not set
+    app_id_str = os.getenv(ENV_APP_ID)
+    
+    # For readonly calls, we don't require a real delegated account
+    if _call_types == "readonly":
+        # Only require node connection for readonly calls
+        missing_vars = []
+        if not algod_token:
+            missing_vars.append(ENV_ALGOD_TOKEN)
+        if not algod_server:
+            missing_vars.append(ENV_ALGOD_SERVER)
+        if not app_id_str:
+            missing_vars.append(ENV_APP_ID)
+            
+        if missing_vars:
+            raise ValueError(f"Missing required environment variables for readonly calls: {', '.join(missing_vars)}")
+    else:
+        # Validate required environment variables for write calls
+        missing_vars = []
+        if not algod_token:
+            missing_vars.append(ENV_ALGOD_TOKEN)
+        if not algod_server:
+            missing_vars.append(ENV_ALGOD_SERVER)
+        if not delegated_key:
+            missing_vars.append(ENV_DELEGATED_KEY)
+        if not app_id_str:
+            missing_vars.append(ENV_APP_ID)
+            
+        if missing_vars:
+            raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
+    
+        # Validate private key format
+        if not _validate_private_key(delegated_key):
+            raise ValueError("Invalid private key format")
+    
+    # Validate and parse app ID
+    try:
+        app_id = int(app_id_str)
+        if app_id <= 0:
+            raise ValueError("App ID must be positive")
+    except ValueError as e:
+        raise ValueError(f"Invalid app ID: {e}")
+    
+    # Validate and parse port
+    try:
+        port = int(algod_port)
+        if port <= 0 or port > 65535:
+            raise ValueError("Port must be between 1 and 65535")
+    except ValueError as e:
+        raise ValueError(f"Invalid port: {e}")
+    
+    try:
+        # Initialize AlgorandClient using modern API
+        _algorand_client = AlgorandClient.from_config(algod_config=AlgoClientNetworkConfig(
+            token=algod_token,
+            server=algod_server,
+            port=port
+        ))
+        
+        _contract_id = app_id
+        
+        # Load ABI contract
+        abi_data = {{ abi_json | to_pretty_json }}
+        _abi_contract = Contract.from_json(json.dumps(abi_data))
+        
+        # Initialize accounts based on call types
+        if _call_types == "readonly":
+            # Create a dummy account for readonly calls (use a known test account)
+            _account = _algorand_client.account.random()
+        else:
+            # Use real delegated account for write calls
+            if len(delegated_key.split()) == 25:
+                # Mnemonic phrase
+                private_key = to_private_key(delegated_key)
+                _account = SigningAccount(private_key=private_key)
+            else:
+                # Private key
+                _account = SigningAccount(private_key=delegated_key)
+        
+        # Register the account with the AlgorandClient
+        _algorand_client.account.set_default_signer(_account)
+        
+        # Verify connection by getting node status
+        _algorand_client.client.algod.status()
+        
+        _initialized = True
+        logger.info(f"✅ Initialized from environment - SigningAccount: {_account.address}, App ID: {app_id}, Mode: {_call_types}")
+        
+    except Exception as e:
+        logger.error(f"❌ Environment initialization failed: {e}")
+        raise ValueError(f"Failed to initialize from environment: {e}")
+
+
+def _ensure_initialized() -> None:
+    """Ensure the connection is properly initialized."""
+    if not _initialized:
+        _init_from_environment()
+    
+    if not all([_algorand_client, _account, _contract_id, _abi_contract]):
+        raise ValueError("Connection not initialized properly. Check environment variables.")
+
+
+def _get_account() -> SigningAccount:
+    """Get account for transactions."""
+    if not _account:
+        raise ValueError("SigningAccount not initialized")
+    return _account
+
+
+def _execute_method(method_name: str, args: list[Any], simulate: bool = False) -> dict[str, Any]:
+    """Execute or simulate a contract method."""
+    try:
+        _ensure_initialized()
+        assert _algorand_client and _abi_contract and _account and _contract_id
+        
+        # Check if method exists
+        method = _abi_contract.get_method_by_name(method_name)
+        if not method:
+            raise ValueError(f"Method {method_name} not found")
+        
+        # Convert args to the expected format
+        method_args = args if args else []
+        
+        if simulate or (_call_types == "readonly" and method.readonly):
+            # Use simulation for readonly calls or when explicitly requested
+            result = (
+                _algorand_client.new_group()
+                .add_app_call_method_call(AppCallMethodCallParams(
+                    sender=_account.address,
+                    app_id=_contract_id,
+                    method=method,
+                    args=method_args
+                ))
+                .simulate()
+            )
+            
+            return {
+                "simulation": True,
+                "would_succeed": True,
+                "result": result.returns[0] if result.returns else None,
+                "trace": result.simulate_response['txn-groups'][0]['txn-results'][0] if result.simulate_response else {},
+                "method": method_name,
+                "confirmation": result.confirmations[0] if result.confirmations else None
+            }
+        else:
+            # Execute actual transaction
+            result = (
+                _algorand_client.new_group()
+                .add_app_call_method_call(AppCallMethodCallParams(
+                    sender=_account.address,
+                    app_id=_contract_id,
+                    method=method,
+                    args=method_args
+                ))
+                .send()
+            )
+            
+            return {
+                "confirmation": result.confirmations[0] if result.confirmations else None,
+                "tx_id": result.tx_ids[0] if result.tx_ids else None,
+                "result": result.returns[0] if result.returns else None,
+                "method": method_name
+            }
+    except Exception as e:
+        logger.error(f"Error executing method {method_name}: {e}")
+        raise
+
+
+@mcp.tool()
+def get_connection_info() -> dict[str, Any]:
+    """Get current connection information (without sensitive data)."""
+    try:
+        _ensure_initialized()
+        assert _algorand_client and _account and _contract_id
+        
+        status = _algorand_client.client.algod.status()
+        
+        return {
+            "connected": True,
+            "sender_address": _account.address,
+            "app_id": _contract_id,
+            "node_version": status.get("version", "unknown"),
+            "node_round": status.get("last-round", 0),
+            "network": status.get("genesis-id", "unknown"),
+            "call_types": _call_types,
+            "using_dummy_account": _call_types == "readonly"
+        }
+    except Exception as e:
+        return {
+            "connected": False,
+            "error": str(e)
+        }
+
+
+@mcp.tool()
+def verify_environment_setup() -> dict[str, Any]:
+    """Verify that all required environment variables are properly configured."""
+    required_vars = [ENV_ALGOD_TOKEN, ENV_ALGOD_SERVER, ENV_ALGOD_PORT, ENV_DELEGATED_KEY, ENV_APP_ID]
+    
+    status = {}
+    all_set = True
+    
+    for var in required_vars:
+        value = os.getenv(var)
+        if value:
+            status[var] = "✅ Set"
+            # Additional validation for specific vars
+            if var == ENV_DELEGATED_KEY:
+                if _validate_private_key(value):
+                    status[var] += " (valid format)"
+                else:
+                    status[var] = "❌ Invalid format"
+                    all_set = False
+            elif var == ENV_ALGOD_PORT:
+                try:
+                    port = int(value)
+                    if 1 <= port <= 65535:
+                        status[var] += f" (port: {port})"
+                    else:
+                        status[var] = "❌ Must be between 1 and 65535"
+                        all_set = False
+                except ValueError:
+                    status[var] = "❌ Must be integer"
+                    all_set = False
+            elif var == ENV_APP_ID:
+                try:
+                    app_id = int(value)
+                    if app_id > 0:
+                        status[var] += f" (app_id: {app_id})"
+                    else:
+                        status[var] = "❌ Must be positive"
+                        all_set = False
+                except ValueError:
+                    status[var] = "❌ Must be integer"
+                    all_set = False
+        else:
+            status[var] = "❌ Not set"
+            all_set = False
+    
+    return {
+        "all_configured": all_set,
+        "environment_variables": status,
+        "instructions": "Set required environment variables in your MCP settings configuration"
+    }
+
+
+@mcp.tool()
+def get_contract_info() -> dict[str, Any]:
+    """Get contract information."""
+    return {
+        "name": "{{ contract.name }}",
+        "description": "{{ contract.description or 'No description' }}",
+        "methods": {{ contract.methods | tojson }}
+    }
+
+
+def _sanitize_input(value: Any, expected_type: str) -> Any:
+    """Sanitize and validate input values."""
+    if expected_type == "string" and isinstance(value, str):
+        # Basic string sanitization
+        return value.strip()[:1000]  # Limit string length
+    elif expected_type == "address" and isinstance(value, str):
+        if not _validate_address(value):
+            raise ValueError(f"Invalid address format: {value}")
+        return value
+    elif expected_type.startswith("uint") and isinstance(value, int):
+        if value < 0:
+            raise ValueError(f"Unsigned integer cannot be negative: {value}")
+        return value
+    elif expected_type == "bool" and isinstance(value, bool):
+        return value
+    elif expected_type.endswith("[]") and isinstance(value, list):
+        # Basic list validation
+        if len(value) > 1000:  # Limit array size
+            raise ValueError("Array too large")
+        return value
+    return value
+
+
+{% for method in contract.methods %}
+@mcp.tool()
+def {{ method.name | python_identifier }}(
+    {%- for arg in method.args -%}
+    {{ arg.name }}: {{ arg.type | python_type }}{{ ", " if not loop.last }}
+    {%- endfor -%}
+    {%- if method.args %}, {% endif -%}
+    simulate_only: bool = {{ method.readonly | python_bool }}
+) -> dict[str, Any]:
+    """{{ method.description or method.name }}
+    
+    {% if method.args -%}
+    Args:
+    {%- for arg in method.args %}
+        {{ arg.name }} ({{ arg.type }}): {{ arg.description or 'No description' }}
+    {%- endfor %}
+    {% endif -%}
+    {% if method.readonly %}This is a read-only method (simulation only).{% endif %}
+    
+    simulate_only: Whether to only simulate the transaction (default: {{ method.readonly | python_bool }})
+    """
+    try:
+        # Input validation and sanitization
+        sanitized_args = []
+        {% for arg in method.args -%}
+        sanitized_args.append(_sanitize_input({{ arg.name }}, "{{ arg.type }}"))
+        {% endfor %}
+        
+        return _execute_method(
+            "{{ method.name }}", 
+            sanitized_args,
+            simulate_only
+        )
+    except Exception as e:
+        logger.error(f"Error in {{ method.name }}: {e}")
+        return {"error": str(e)}
+
+
+{% endfor %}
+@mcp.tool()
+def get_application_state() -> dict[str, Any]:
+    """Get global application state."""
+    try:
+        _ensure_initialized()
+        assert _algorand_client and _contract_id
+        
+        app_info = _algorand_client.client.algod.application_info(_contract_id)
+        global_state = {}
+        
+        if "global-state" in app_info["params"]:
+            import base64
+            for item in app_info["params"]["global-state"]:
+                try:
+                    key = base64.b64decode(item["key"]).decode('utf-8', errors='ignore')
+                    value = item["value"]
+                    
+                    if value["type"] == 1:  # bytes
+                        decoded_value = base64.b64decode(value["bytes"]).hex()
+                    else:  # uint
+                        decoded_value = value["uint"]
+                    
+                    global_state[key] = decoded_value
+                except Exception as e:
+                    logger.warning(f"Failed to decode state item: {e}")
+        
+        return {
+            "app_id": _contract_id,
+            "global_state": global_state,
+            "creator": app_info["params"]["creator"]
+        }
+    except Exception as e:
+        logger.error(f"Error getting application state: {e}")
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def get_account_local_state(account_address: str) -> dict[str, Any]:
+    """Get account local state for this application."""
+    try:
+        # Validate address format
+        if not _validate_address(account_address):
+            return {"error": "Invalid account address format"}
+            
+        _ensure_initialized()
+        assert _algorand_client and _contract_id
+        
+        account_info = _algorand_client.client.algod.account_info(account_address)
+        local_states = account_info.get("apps-local-state", [])
+        
+        for local_state in local_states:
+            if local_state["id"] == _contract_id:
+                decoded_state = {}
+                
+                if "key-value" in local_state:
+                    import base64
+                    for item in local_state["key-value"]:
+                        try:
+                            key = base64.b64decode(item["key"]).decode('utf-8', errors='ignore')
+                            value = item["value"]
+                            
+                            if value["type"] == 1:  # bytes
+                                decoded_value = base64.b64decode(value["bytes"]).hex()
+                            else:  # uint
+                                decoded_value = value["uint"]
+                            
+                            decoded_state[key] = decoded_value
+                        except Exception as e:
+                            logger.warning(f"Failed to decode local state item: {e}")
+                
+                return {
+                    "account": account_address,
+                    "app_id": _contract_id,
+                    "local_state": decoded_state
+                }
+        
+        return {
+            "account": account_address,
+            "app_id": _contract_id,
+            "local_state": {},
+            "message": "SigningAccount not opted into this application"
+        }
+    except Exception as e:
+        logger.error(f"Error getting account local state: {e}")
+        return {"error": str(e)}
+
+
+def main() -> None:
+    """Main entry point for the MCP server."""
+    try:
+        # Initialize from environment on startup
+        _init_from_environment()
+        logger.info("🚀 MCP Server for {{ contract.name }} ready!")
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize: {e}")
+        logger.info("💡 Ensure environment variables are set:")
+        logger.info(f"   - {ENV_ALGOD_TOKEN}")
+        logger.info(f"   - {ENV_ALGOD_SERVER}")
+        logger.info(f"   - {ENV_ALGOD_PORT} (optional, defaults to 443)")
+        logger.info(f"   - {ENV_DELEGATED_KEY}")
+        logger.info(f"   - {ENV_APP_ID}")
+    
+    mcp.run()
+
+
+if __name__ == "__main__":
+    main()

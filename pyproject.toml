@@ -1,0 +1,44 @@
+[project]
+name = "arcontextify"
+version = "0.0.1"
+description = "Convert ARC-56 smart contract specifications to MCP servers"
+readme = "README.md"
+authors = [{ name = "Al O", email = "altynbek.orumbayev@makerx.com.au" }]
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = [
+    "click>=8.0.0",
+    "mcp[cli]>=1.0.0",
+    "algokit-utils>=2.0.0",
+    "jinja2>=3.0.0",
+    "pydantic>=2.0.0",
+]
+
+[project.scripts]
+arcontextify = "arcontextify.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/arcontextify"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.0.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.16.1",
+    "pytest-sugar>=1.0.0",
+]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = ["-ra", "--strict-markers", "--strict-config", "--durations=10"]
+testpaths = ["tests"]
+markers = ["slow: marks tests as slow (may take longer to run)"]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+]
